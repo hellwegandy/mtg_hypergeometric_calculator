@@ -115,6 +115,7 @@ def getHandChanceWithStartingMana(target_cards, start_mana, end_mana, turns=0, d
             'start': [],
             'draws': []
         }
+        mana_chance[mana] = []
         for num_targets_to_draw in range(0, num_cards + 1):
             target_combinations = _card_combinations_as_indexes(cards_copy, num_targets_to_draw)
             for combination in target_combinations:
@@ -126,17 +127,22 @@ def getHandChanceWithStartingMana(target_cards, start_mana, end_mana, turns=0, d
                 else:
                     start_mana_in_hand.append(mana)
                 draws_for_end_mana = copy.deepcopy(end_mana)
-                draws_for_end_mana[0] -= mana
+                draws_for_end_mana[0] -= mana if draws_for_end_mana[0] >= mana else draws_for_end_mana[0]
                 draws_for_end_mana[1] -= mana
                 if len(draws_for_end_mana) >= 4:
                     draws_for_end_mana[3] -= mana
+                    if draws_for_end_mana[3] < 0:
+                        hands[mana]['start'].append([start_mana_in_hand])
+                        hands[mana]['draws'].append([draws_for_end_mana])
+                        mana_chance[mana].append(0)
+                        continue
                 start_hand = [start_mana_in_hand]
                 draws = [draws_for_end_mana]
                 for index in combination:
                     cards_in_hand[index][0] -= 1
                 for index in range(len(cards_in_hand)):
                     missing_card = copy.deepcopy(cards_in_hand[index])
-                    missing_card[0] = cards_copy[index][0] - cards_in_hand[index][0]
+                    missing_card[0] = (cards_copy[index][0] - cards_in_hand[index][0]) if cards_copy[index][0] > cards_in_hand[index][0] else 0
                     missing_card[1] = cards_copy[index][1] - cards_in_hand[index][0]
                     if len(missing_card) >= 4:
                         missing_card[3] -= cards_in_hand[index][0]
@@ -151,8 +157,6 @@ def getHandChanceWithStartingMana(target_cards, start_mana, end_mana, turns=0, d
                 start_hand.extend(cards_in_hand)
                 hands[mana]['start'].append(start_hand)
                 hands[mana]['draws'].append(draws)
-                if mana not in mana_chance:
-                    mana_chance[mana] = []
                 mana_chance[mana].append(getHandChance(start_hand, 0) * getDrawChance(draws, 0, turns))
     _printDebug(hands)
     probSum = 0
