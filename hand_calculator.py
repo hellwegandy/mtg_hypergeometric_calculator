@@ -1,5 +1,5 @@
 from scipy.stats import multivariate_hypergeom as mhg
-from typing import List
+from typing import List, Dict
 import copy
 import itertools
 
@@ -18,6 +18,9 @@ class Card:
     def __str__(self):
         string = f'{self.in_hand} {self.card_type} of {self.deck_total} max {self.hand_max}'
         return string
+
+    def __repr__(self):
+        return self.__str__()
 
 
 def setDebug(state):
@@ -197,12 +200,9 @@ def get_tutor_combinations(target_cards: List[Card], num_tutors: int, total_mana
             _printDebug(replace_indexes)
             for index in replace_indexes:
                 hand_copy[index].in_hand -= 1
-                if hand_copy[index].hand_max is not None:
-                    hand_copy[index].hand_max = hand_copy[index].in_hand
-                else:
-                    hand_copy[index].append(hand_copy[index].in_hand)
+                hand_copy[index].hand_max = hand_copy[index].in_hand
 
-            hand_copy.append([num_swaps, num_tutors, 'tutors'])
+            hand_copy.append(Card('tutors', num_swaps, num_tutors))
             hands.append(hand_copy)
     for hand in hands:
         hand.append(total_mana)
@@ -223,3 +223,62 @@ def getHandChanceWithStartingManaAndTutors(target_cards: List[Card], num_tutors:
     for result in results:
         print(result)
     return chance
+
+
+# SET MANA 40
+# GET { 5 MANA } TURN 0
+class HandQuery:
+    query_words: List[str]
+
+    def __init__(self, query_string: str):
+        self.query_string = query_string
+        self.item_index = 0
+        self.current_depth = 0
+        self.card_types_in_deck: Dict[str, int] = {}
+        self.init_card_totals()
+
+    def init_card_totals(self):
+        query_lines = []
+        for line in self.query_string.splitlines():
+            if line[:3] == "SET":
+                config = line.split()
+                self.card_types_in_deck[config[1]] = int(config[2])
+            else:
+                query_lines.append(line)
+        self.query_words = [word for line in query_lines for word in line.split()]
+
+    def query(self):
+        hand = []
+        turn = None
+        while self.item_index < len(self.query_words):
+            if self.query_words[self.item_index] == "GET":
+                self.item_index += 1
+                continue
+            if self.query_words[self.item_index] == '{':
+                self.current_depth += 1
+                self.item_index += 1
+                continue
+            if self.query_words[self.item_index] == '}':
+                self.current_depth -= 1
+                self.item_index -= 1
+                continue
+            if self.query_words[self.item_index] == 'TURN':
+                turn = self.query_words[self.item_index+1]
+                self.item_index += 2
+                continue
+            if self.query_words[self.item_index] == 'THEN':
+                self.item_index += 1
+                continue
+
+            hand.append(self.get_next_card())
+
+    def get_next_card(self):
+        in_hand = int(self.query_words[self.item_index])
+        card_type = self.query_words[self.item_index + 1]
+        deck_total = self.card_types_in_deck[card_type]
+        card = Card(card_type, in_hand, deck_total)
+        self.item_index += 2
+        if self.query_words[self.item_index] == 'MAX':
+            card.hand_max = int(self.query_words[self.item_index+1])
+            self.item_index += 2
+        return card

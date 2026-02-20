@@ -21,13 +21,13 @@ def mana_chance():
     results = []
     olivia_total_mana = 44
     for mana in range(olivia_total_mana-3, olivia_total_mana + 4):
-        open_mana = Card('mana', 3, mana, 7)
+        open_mana = Card('mana', 2, mana, 2)
         low = Card('mana', 0, mana, 2)
-        mid = Card('mana', 3, mana, 6)
-        high = Card('mana', 7, mana)
+        mid = Card('mana', 3, mana, 7)
+        high = Card('mana', 8, mana)
 
         chance = hand_calculator.getHandChance([open_mana], 0)
-        results.append(f'3-5 mana in hand with {mana} mana in deck: {chance * 100}')
+        results.append(f'2-5 mana in opening hand with {mana} mana in deck: {chance * 100}')
 
         chance = 0
         turn4_chance = hand_calculator.getHandChanceWithStartingMana([], open_mana, low, 4)
@@ -46,3 +46,4 @@ def mana_chance():
 
 
 mana_chance()
+calc_win_chances()
