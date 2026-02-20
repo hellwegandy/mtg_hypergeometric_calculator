@@ -1,10 +1,23 @@
 from scipy.stats import multivariate_hypergeom as mhg
+from typing import List
 import copy
 import itertools
 
 _deckSize = 99
 _cardsSeen = 7
 _debug=False
+
+
+class Card:
+    def __init__(self, card_type, in_hand, deck_total, hand_max=None):
+        self.card_type = card_type
+        self.in_hand = in_hand
+        self.deck_total = deck_total
+        self.hand_max = hand_max
+
+    def __str__(self):
+        string = f'{self.in_hand} {self.card_type} of {self.deck_total} max {self.hand_max}'
+        return string
 
 
 def setDebug(state):
@@ -17,18 +30,18 @@ def _printDebug(*toBePrinted):
         print(toBePrinted)
 
 
-def calculate_exact_draw(hand):
+def calculate_exact_draw(hand: List[Card]):
     x = []
     m = []
     deck_size_sum = 0
     hand_sum = 0
     hand_string = ''
     for cardType in hand:
-        hand_sum += cardType[0]
-        x.append(cardType[0])
-        deck_size_sum += cardType[1]
-        m.append(cardType[1])
-        hand_string += f'{cardType[0]}/{cardType[1]} {cardType[2]}, '
+        hand_sum += cardType.in_hand
+        x.append(cardType.in_hand)
+        deck_size_sum += cardType.deck_total
+        m.append(cardType.deck_total)
+        hand_string += f'{cardType.in_hand}/{cardType.deck_total} {cardType.card_type}, '
     hand_string = '[' + hand_string[:-2] + '}'
 
     if hand_sum > _cardsSeen or deck_size_sum > _deckSize:
@@ -44,7 +57,7 @@ def calculate_exact_draw(hand):
     return probability
 
 
-def _calculate_next_draw(hand):
+def _calculate_next_draw(hand: List[Card]):
     hand_copy = copy.deepcopy(hand)
 
     index = len(hand)-1
@@ -52,19 +65,19 @@ def _calculate_next_draw(hand):
     # make sure there is another card in hand to increment
     while index >= 0:
         next_card_type = hand_copy[index]
-        max_count = next_card_type[3] if len(next_card_type) == 4 else next_card_type[1]
-        hand_count = sum([ct[0] for ct in hand_copy if ct])
-        if hand_count >= _cardsSeen or next_card_type[0] >= max_count:
-            hand_copy[index][0] = _target_cards[index][0]
+        max_count = next_card_type.hand_max if next_card_type.hand_max is not None else next_card_type.deck_total
+        hand_count = sum([ct.in_hand for ct in hand_copy if ct])
+        if hand_count >= _cardsSeen or next_card_type.in_hand >= max_count:
+            hand_copy[index].in_hand = _target_cards[index].in_hand
             index -= 1
         else:
-            hand_copy[index][0] += 1
+            hand_copy[index].in_hand += 1
             return hand_copy
 
     return None
 
 
-def getHandChance(target_hand, turns=0, deck_size=99):
+def getHandChance(target_hand: List[Card], turns=0, deck_size=99):
     global _target_cards, _cardsSeen, _deckSize
     _deckSize = deck_size
     _target_cards = target_hand
@@ -79,7 +92,7 @@ def getHandChance(target_hand, turns=0, deck_size=99):
     return probSum
 
 
-def getDrawChance(target_cards, turn=0, num_draws=1):
+def getDrawChance(target_cards: List[Card], turn=0, num_draws=1):
     global _target_cards, _cardsSeen, _deckSize
     _deckSize = 99 - 7 - turn
     _target_cards = target_cards
@@ -94,23 +107,23 @@ def getDrawChance(target_cards, turn=0, num_draws=1):
     return probSum
 
 
-def getHandChanceWithStartingMana(target_cards, start_mana, end_mana, turns=0, deck_size=99):
+def getHandChanceWithStartingMana(target_cards: List[Card], start_mana: Card, end_mana: Card, turns=0, deck_size=99):
     global _cardsSeen, _deckSize
     _deckSize = deck_size
     _cardsSeen = 7 + turns
 
-    max_start_mana = start_mana[3] if len(start_mana) >= 4 else start_mana[1]
+    max_start_mana = start_mana.hand_max if start_mana.hand_max is not None else start_mana.deck_total
     mana_chance = {}
     hands = {}
     cards_copy = copy.deepcopy(target_cards)
-    cards_copy = [card for card in cards_copy if card[2] != 'mana']
+    cards_copy = [card for card in cards_copy if card.card_type != 'mana']
     # number of non-land cards in opening hand
-    num_cards = sum([card[0] for card in cards_copy])
+    num_cards = sum([card.in_hand for card in cards_copy])
 
     # for each amount of mana in opening hand
     # calculate possible starting hands
     # and card draws needed to have the target cards in hand
-    for mana in range(start_mana[0], max_start_mana + 1):
+    for mana in range(start_mana.in_hand, max_start_mana + 1):
         hands[mana] = {
             'start': [],
             'draws': []
@@ -121,17 +134,14 @@ def getHandChanceWithStartingMana(target_cards, start_mana, end_mana, turns=0, d
             for combination in target_combinations:
                 cards_in_hand = copy.deepcopy(cards_copy)
                 start_mana_in_hand = copy.deepcopy(start_mana)
-                start_mana_in_hand[0] = mana
-                if len(start_mana_in_hand) >= 4:
-                    start_mana_in_hand[3] = mana
-                else:
-                    start_mana_in_hand.append(mana)
+                start_mana_in_hand.in_hand = mana
+                start_mana_in_hand.hand_max = mana
                 draws_for_end_mana = copy.deepcopy(end_mana)
-                draws_for_end_mana[0] -= mana if draws_for_end_mana[0] >= mana else draws_for_end_mana[0]
-                draws_for_end_mana[1] -= mana
-                if len(draws_for_end_mana) >= 4:
-                    draws_for_end_mana[3] -= mana
-                    if draws_for_end_mana[3] < 0:
+                draws_for_end_mana.in_hand -= mana if draws_for_end_mana.in_hand >= mana else draws_for_end_mana.in_hand
+                draws_for_end_mana.deck_total -= mana
+                if draws_for_end_mana.hand_max is not None:
+                    draws_for_end_mana.hand_max -= mana
+                    if draws_for_end_mana.hand_max < 0:
                         hands[mana]['start'].append([start_mana_in_hand])
                         hands[mana]['draws'].append([draws_for_end_mana])
                         mana_chance[mana].append(0)
@@ -139,20 +149,17 @@ def getHandChanceWithStartingMana(target_cards, start_mana, end_mana, turns=0, d
                 start_hand = [start_mana_in_hand]
                 draws = [draws_for_end_mana]
                 for index in combination:
-                    cards_in_hand[index][0] -= 1
+                    cards_in_hand[index].in_hand -= 1
                 for index in range(len(cards_in_hand)):
                     missing_card = copy.deepcopy(cards_in_hand[index])
-                    missing_card[0] = (cards_copy[index][0] - cards_in_hand[index][0]) if cards_copy[index][0] > cards_in_hand[index][0] else 0
-                    missing_card[1] = cards_copy[index][1] - cards_in_hand[index][0]
-                    if len(missing_card) >= 4:
-                        missing_card[3] -= cards_in_hand[index][0]
+                    missing_card.in_hand = (cards_copy[index].in_hand - cards_in_hand[index].in_hand) if cards_copy[index].in_hand > cards_in_hand[index].in_hand else 0
+                    missing_card.deck_total = cards_copy[index].deck_total - cards_in_hand[index].in_hand
+                    if missing_card.hand_max is not None:
+                        missing_card.hand_max -= cards_in_hand[index].in_hand
 
                     draws.append(missing_card)
                 for card_type in cards_in_hand:
-                    if len(card_type) >= 4:
-                        card_type[3] = card_type[0]
-                    else:
-                        card_type.append(card_type[0])
+                    card_type.hand_max = card_type.in_hand
 
                 start_hand.extend(cards_in_hand)
                 hands[mana]['start'].append(start_hand)
@@ -170,18 +177,18 @@ def getHandChanceWithStartingMana(target_cards, start_mana, end_mana, turns=0, d
     return probSum
 
 
-def _card_combinations_as_indexes(hand, choose):
+def _card_combinations_as_indexes(hand: List[Card], choose: int):
     cards = []
     for index in range(len(hand)):
-        cards.extend([index] * hand[index][0])
+        cards.extend([index] * hand[index].in_hand)
 
     return list(dict.fromkeys(itertools.combinations(cards, choose)))
 
 
-def get_tutor_combinations(target_cards, num_tutors, total_mana):
+def get_tutor_combinations(target_cards: List[Card], num_tutors: int, total_mana: Card):
     hands = list()
     hands.append(copy.deepcopy(target_cards))
-    total_parts = sum(part[0] for part in target_cards)
+    total_parts = sum(part.in_hand for part in target_cards)
     for num_swaps in range(1, min(num_tutors, total_parts) + 1):
         combination_indexes = _card_combinations_as_indexes(target_cards, num_swaps)
 
@@ -189,11 +196,11 @@ def get_tutor_combinations(target_cards, num_tutors, total_mana):
             hand_copy = copy.deepcopy(target_cards)
             _printDebug(replace_indexes)
             for index in replace_indexes:
-                hand_copy[index][0] -= 1
-                if len(hand_copy[index]) >= 4:
-                    hand_copy[index][3] = hand_copy[index][0]
+                hand_copy[index].in_hand -= 1
+                if hand_copy[index].hand_max is not None:
+                    hand_copy[index].hand_max = hand_copy[index].in_hand
                 else:
-                    hand_copy[index].append(hand_copy[index][0])
+                    hand_copy[index].append(hand_copy[index].in_hand)
 
             hand_copy.append([num_swaps, num_tutors, 'tutors'])
             hands.append(hand_copy)
@@ -202,7 +209,7 @@ def get_tutor_combinations(target_cards, num_tutors, total_mana):
     return hands
 
 
-def getHandChanceWithStartingManaAndTutors(target_cards, num_tutors, target_mana, starting_mana, turn):
+def getHandChanceWithStartingManaAndTutors(target_cards: List[Card], num_tutors: int, target_mana: Card, starting_mana: Card, turn: int):
     results = []
     starting_mana_multiplier3 = getHandChance([starting_mana], 0)
     results.append(f'opening mana chance: {starting_mana_multiplier3 * 100}')
