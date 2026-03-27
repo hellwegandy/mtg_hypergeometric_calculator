@@ -6,6 +6,7 @@ import itertools
 _deckSize = 99
 _cardsSeen = 7
 _debug=False
+_target_cards = None
 
 
 class Card:
@@ -17,6 +18,19 @@ class Card:
 
     def __str__(self):
         string = f'{self.in_hand} {self.card_type} of {self.deck_total} max {self.hand_max}'
+        return string
+
+    def __repr__(self):
+        return self.__str__()
+
+
+class HandAfterTurns:
+    def __init__(self, cards: List[Card], turns_passed=0):
+        self.cards = cards
+        self.turns_passed = turns_passed
+
+    def __str__(self):
+        string = f'{self.turns_passed}Turns Passed \nCards in hand: {[str(card) for card in self.cards]}'
         return string
 
     def __repr__(self):
@@ -80,13 +94,13 @@ def _calculate_next_draw(hand: List[Card]):
     return None
 
 
-def getHandChance(target_hand: List[Card], turns=0, deck_size=99):
+def getHandChance(hand_after_turns: HandAfterTurns, deck_size=99):
     global _target_cards, _cardsSeen, _deckSize
     _deckSize = deck_size
-    _target_cards = target_hand
-    _cardsSeen = 7 + turns
+    _target_cards = hand_after_turns.cards
+    _cardsSeen = 7 + hand_after_turns.turns_passed
     probSum = 0
-    nextHand = copy.deepcopy(target_hand)
+    nextHand = copy.deepcopy(hand_after_turns.cards)
     while nextHand:
         probSum += calculate_exact_draw(nextHand)
         nextHand = _calculate_next_draw(nextHand)
@@ -95,13 +109,13 @@ def getHandChance(target_hand: List[Card], turns=0, deck_size=99):
     return probSum
 
 
-def getDrawChance(target_cards: List[Card], turn=0, num_draws=1):
+def getDrawChance(hand_after_turns: HandAfterTurns, start_turn=0):
     global _target_cards, _cardsSeen, _deckSize
-    _deckSize = 99 - 7 - turn
-    _target_cards = target_cards
-    _cardsSeen = num_draws
+    _deckSize = 99 - 7 - start_turn
+    _target_cards = hand_after_turns.cards
+    _cardsSeen = hand_after_turns.turns_passed
     probSum = 0
-    nextHand = copy.deepcopy(target_cards)
+    nextHand = copy.deepcopy(hand_after_turns.cards)
     while nextHand:
         probSum += calculate_exact_draw(nextHand)
         nextHand = _calculate_next_draw(nextHand)
@@ -110,15 +124,15 @@ def getDrawChance(target_cards: List[Card], turn=0, num_draws=1):
     return probSum
 
 
-def getHandChanceWithStartingMana(target_cards: List[Card], start_mana: Card, end_mana: Card, turns=0, deck_size=99):
+def getHandChanceWithStartingMana(hand_after_turns: HandAfterTurns, start_mana: Card, end_mana: Card, deck_size=99):
     global _cardsSeen, _deckSize
     _deckSize = deck_size
-    _cardsSeen = 7 + turns
+    _cardsSeen = 7 + hand_after_turns.turns_passed
 
     max_start_mana = start_mana.hand_max if start_mana.hand_max is not None else start_mana.deck_total
     mana_chance = {}
     hands = {}
-    cards_copy = copy.deepcopy(target_cards)
+    cards_copy = copy.deepcopy(hand_after_turns.cards)
     cards_copy = [card for card in cards_copy if card.card_type != 'mana']
     # number of non-land cards in opening hand
     num_cards = sum([card.in_hand for card in cards_copy])
@@ -167,7 +181,7 @@ def getHandChanceWithStartingMana(target_cards: List[Card], start_mana: Card, en
                 start_hand.extend(cards_in_hand)
                 hands[mana]['start'].append(start_hand)
                 hands[mana]['draws'].append(draws)
-                mana_chance[mana].append(getHandChance(start_hand, 0) * getDrawChance(draws, 0, turns))
+                mana_chance[mana].append(getHandChance(HandAfterTurns(start_hand)) * getDrawChance(HandAfterTurns(draws, hand_after_turns.turns_passed), 0))
     _printDebug(hands)
     probSum = 0
     for mana in mana_chance:
@@ -209,15 +223,15 @@ def get_tutor_combinations(target_cards: List[Card], num_tutors: int, total_mana
     return hands
 
 
-def getHandChanceWithStartingManaAndTutors(target_cards: List[Card], num_tutors: int, target_mana: Card, starting_mana: Card, turn: int):
+def getHandChanceWithStartingManaAndTutors(hand_after_turns: HandAfterTurns, num_tutors: int, target_mana: Card, starting_mana: Card):
     results = []
-    starting_mana_multiplier3 = getHandChance([starting_mana], 0)
+    starting_mana_multiplier3 = getHandChance(HandAfterTurns([starting_mana], 0))
     results.append(f'opening mana chance: {starting_mana_multiplier3 * 100}')
-    olivia_win_hands = get_tutor_combinations(target_cards, num_tutors, target_mana)
-    chance1 = sum([getHandChance(hand, turn) for hand in olivia_win_hands])
-    results.append(f'win chance turn {turn}: {chance1 * 100}')
-    chance = sum([getHandChanceWithStartingMana(hand, starting_mana, target_mana, turn) for hand in olivia_win_hands])
-    results.append(f'(starting mana) win chance turn {turn}: {chance * 100}')
+    olivia_win_hands = get_tutor_combinations(hand_after_turns.cards, num_tutors, target_mana)
+    chance1 = sum([getHandChance(HandAfterTurns(hand, hand_after_turns.turns_passed)) for hand in olivia_win_hands])
+    results.append(f'win chance turn {hand_after_turns.turns_passed}: {chance1 * 100}')
+    chance = sum([getHandChanceWithStartingMana(HandAfterTurns(hand), starting_mana, target_mana) for hand in olivia_win_hands])
+    results.append(f'(starting mana) win chance turn {hand_after_turns.turns_passed}: {chance * 100}')
     results.append(f'(starting mana):total ratio is  {chance/chance1}')
     results.append(f'ratio vs open mana chance: {starting_mana_multiplier3/(chance/chance1)}')
     for result in results:
@@ -229,29 +243,39 @@ def getHandChanceWithStartingManaAndTutors(target_cards: List[Card], num_tutors:
 # GET { 5 MANA } TURN 0
 class HandQuery:
     query_words: List[str]
+    probability: float
 
     def __init__(self, query_string: str):
-        self.query_string = query_string
+        self.query_string = query_string.strip()
         self.item_index = 0
         self.current_depth = 0
         self.card_types_in_deck: Dict[str, int] = {}
         self.init_card_totals()
 
+    def __str__(self):
+        string = f'{self.probability}'
+        return string
+
+    def __repr__(self):
+        return self.__str__()
+
     def init_card_totals(self):
         query_lines = []
         for line in self.query_string.splitlines():
+            line = line.strip()
             if line[:3] == "SET":
                 config = line.split()
                 self.card_types_in_deck[config[1]] = int(config[2])
             else:
                 query_lines.append(line)
         self.query_words = [word for line in query_lines for word in line.split()]
+        self.query()
 
     def query(self):
         hand = []
-        turn = None
+        turn = 0
         while self.item_index < len(self.query_words):
-            if self.query_words[self.item_index] == "GET":
+            if self.query_words[self.item_index].upper() == "GET":
                 self.item_index += 1
                 continue
             if self.query_words[self.item_index] == '{':
@@ -260,17 +284,28 @@ class HandQuery:
                 continue
             if self.query_words[self.item_index] == '}':
                 self.current_depth -= 1
-                self.item_index -= 1
-                continue
-            if self.query_words[self.item_index] == 'TURN':
-                turn = self.query_words[self.item_index+1]
-                self.item_index += 2
-                continue
-            if self.query_words[self.item_index] == 'THEN':
                 self.item_index += 1
                 continue
+            if self.query_words[self.item_index].upper() == 'TURN':
+                turn = int(self.query_words[self.item_index+1])
+                self.item_index += 2
+                continue
+            if self.query_words[self.item_index].upper() == 'THEN':
+                self.item_index += 1
+                continue
+            if self.query_words[self.item_index].upper() == 'AND':
+                self.item_index += 1
+                continue
+            if self.query_words[self.item_index].upper() == 'OR':
+                self.item_index += 1
+                continue
+            try:
+                int(self.query_words[self.item_index])
+                hand.append(self.get_next_card())
+            except ValueError as e:
+                raise e
 
-            hand.append(self.get_next_card())
+        self.probability = getHandChance(HandAfterTurns(hand, turn))
 
     def get_next_card(self):
         in_hand = int(self.query_words[self.item_index])
