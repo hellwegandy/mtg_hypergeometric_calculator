@@ -1,5 +1,5 @@
 from scipy.stats import multivariate_hypergeom as mhg
-from typing import List, Dict, cast, Literal, Tuple
+from typing import List, Dict, Literal, Tuple
 import copy
 import itertools
 
@@ -25,12 +25,13 @@ class Card:
     def __repr__(self):
         return self.__str__()
 
+    def __hash__(self):
+        return hash(f'{self.card_type}-{self.in_hand}-{self.deck_total}-{self.hand_max}')
+
 
 Operator = Literal['AND', 'OR']
-
-
 class CardQuery:
-    def __init__(self, cards: List[Card | CardQuery], operator: Operator = 'OR'):
+    def __init__(self, cards: List[Card | CardQuery], operator: Operator=None):
         self.cards = cards
         self.operator = operator
 
@@ -43,9 +44,24 @@ class CardQuery:
     def __iter__(self):
         return iter(self.cards)
 
+    def __len__(self):
+        return len(self.cards)
+
+    def __getitem__(self, key: int) -> CardQuery:
+        """
+        Called to implement evaluation of self[key].
+        """
+        return self.cards[key]
+
+    def __setitem__(self, key: int, value: Card|CardQuery):
+        """
+        Called to implement assignment to self[key].
+        """
+        self.cards[key] = value
+
 
 class HandAfterTurns:
-    def __init__(self, cards: List[Card | CardQuery], turns_passed=0):
+    def __init__(self, cards: CardQuery | List[Card | CardQuery], turns_passed=0):
         self.cards = cards
         self.turns_passed = turns_passed
 
@@ -94,10 +110,13 @@ def calculate_exact_draw(hand: List[Card]):
     return probability
 
 
-def _calculate_next_draw(hand: List[Card]):
-    hand_copy = copy.deepcopy(hand)
+def _calculate_next_draw(hand: CardQuery | List[Card]):
+    try:
+        hand_copy = copy.deepcopy(hand.cards)
+    except AttributeError:
+        hand_copy = copy.deepcopy(hand)
 
-    index = len(hand) - 1
+    index = len(hand_copy) - 1
 
     # make sure there is another card in hand to increment
     while index >= 0:
@@ -122,6 +141,34 @@ def getHandChance(hand_after_turns: HandAfterTurns, deck_size=99):
     prob_sum = 0
     next_hand = copy.deepcopy(hand_after_turns.cards)
 
+    def combine_card_types(hand: List[Card], operator: Operator='AND') -> List[Card]:
+        card_types = {}
+        for card in hand:
+            card_types.setdefault(card.card_type, []).append(card)
+        new_hand = []
+        for card_type_list in card_types.values():
+            if len(card_type_list) == 1:
+                new_hand.extend(card_type_list)
+            else:
+                new_card: Card = copy.deepcopy(card_type_list[0])
+                new_card.in_hand = 0 if operator == 'AND' else None
+                new_card.hand_max = None
+                for card in card_type_list:
+                    if card.hand_max is not None and (
+                            new_card.hand_max is None or card.hand_max > new_card.hand_max):
+                        new_card.hand_max = card.hand_max
+
+                    if operator == 'AND':
+                        new_card.in_hand += card.in_hand
+                    elif operator == 'OR':
+                        new_card.in_hand = min(card.in_hand, new_card.in_hand) if new_card.in_hand else card.in_hand
+
+                if new_card.hand_max is not None and new_card.in_hand > new_card.hand_max:
+                    new_card.hand_max = new_card.in_hand
+                new_hand.append(new_card)
+
+        return new_hand
+
     def dfs(cards: CardQuery | List[Card | CardQuery]) -> List[List[Card]]:
         hands: List[List[Card]] = []
         req_cards: List[Card] = []
@@ -138,52 +185,52 @@ def getHandChance(hand_after_turns: HandAfterTurns, deck_size=99):
                         req_cards.append(card)
                 except AttributeError:
                     req_cards.append(card)
-
+        req_cards = combine_card_types(req_cards)
+        or_cards = combine_card_types(or_cards, 'OR')
         hands.extend(get_card_combinations(req_cards, or_cards))
 
         for card in queued_cards:
-            new_hands = []
+            combined_hands: List[List[Card]] = []
             for hand in hands:
                 for combos in dfs(card):
                     hand_copy = copy.deepcopy(hand)
                     hand_copy.extend(combos)
-                    new_hands.append(hand_copy)
-            hands = new_hands
+                    combined_hands.append(hand_copy)
+            hands = combined_hands
 
-        new_hands = []
+        new_hands: Dict[str, List[Card]] = {}
         for hand in hands:
-            card_types = {}
-            for card in hand:
-                card_types.setdefault(card.card_type, []).append(card)
-            new_hand = []
-            for card_type_list in card_types.values():
-                if len(card_type_list) == 1:
-                    new_hand.extend(card_type_list)
-                else:
-                    new_card: Card = copy.deepcopy(card_type_list[0])
-                    new_card.in_hand = 0
-                    new_card.hand_max = None
-                    for card in card_type_list:
-                        if card.hand_max is not None and new_card.hand_max is None:
-                            new_card.hand_max = card.hand_max
-                        elif card.hand_max is not None and new_card.hand_max is not None:
-                            new_card.hand_max += card.hand_max
-                        new_card.in_hand += card.in_hand
-                    new_hand.append(new_card)
-            new_hands.append(new_hand)
+            new_hand = combine_card_types(hand)
+            hand_hash = ''
+            for card in new_hand:
+                hand_hash += f'{card.__hash__()}-'
+            new_hands.setdefault(hand_hash, new_hand)
 
-        return new_hands
+        return list(new_hands.values())
 
     while next_hand:
+        use_dfs = False
         try:
-            prob_sum += calculate_exact_draw(next_hand)
-            next_hand = _calculate_next_draw(next_hand)
+            if next_hand.operator == 'OR':
+                use_dfs = True
         except AttributeError:
+            pass
+
+        try:
+            if not all(card.in_hand >= 0 for card in next_hand):
+                use_dfs = True
+        except AttributeError:
+            use_dfs = True
+
+        if use_dfs:
             # CardQuery in hand generate all possible hands for CardQuery
             possible_hands = dfs(next_hand)
             for hand in possible_hands:
                 prob_sum += getHandChance(HandAfterTurns(hand, hand_after_turns.turns_passed))
             next_hand = None
+        else:
+            prob_sum += calculate_exact_draw(next_hand)
+            next_hand = _calculate_next_draw(next_hand)
 
     _printDebug('chance of target hand:', prob_sum)
     return prob_sum
@@ -395,8 +442,9 @@ def get_card_combinations(req_cards: List[Card], or_cards: List[Card]) -> List[L
                 total += item.in_hand
         return total
 
+    number_cards = len(or_cards)
     total_parts = sum_nested(or_cards)
-    for num_swaps in range(1, total_parts):
+    for num_swaps in range(1, min(number_cards, total_parts)):
         combination_indexes = _card_combinations_as_indexes(or_cards, num_swaps)
         for replace_indexes in combination_indexes:
             hand_copy = copy.deepcopy(or_cards)
@@ -448,6 +496,7 @@ def getHandChanceWithStartingManaAndTutors(hand_after_turns: HandAfterTurns, num
 class Query:
     parsed_query: ParsedList
     probability: float
+    hands: List[HandAfterTurns]
 
     def __init__(self, query_string: str):
         self.query_string = query_string.strip()
@@ -455,6 +504,7 @@ class Query:
         self.current_depth = 0
         self.card_types_in_deck: Dict[str, int] = {}
         self.init_card_totals()
+        self.probability = getHandChance(self.hands[0])
 
     def __str__(self):
         string = f'{self.probability}'
@@ -483,7 +533,7 @@ class Query:
                     if not close:
                         raise ValueError("bad expression -- unbalanced parentheses")
                     items.append(result)
-                elif self._comma_check(item) == end:
+                elif self._comma_check(item)[0] == end:
                     return items, True
                 else:
                     items.append(item)
@@ -510,7 +560,7 @@ class Query:
         def _process_hand(hand_query_item: ParsedList[str]) -> HandAfterTurns:
             hand_query_item = _get_next_item(1)
             if not isinstance(hand_query_item, str):
-                hand_after_turns = HandAfterTurns(self.get_next_hand(hand_query_item), hand_query_item)
+                hand_after_turns = HandAfterTurns(self.get_next_hand(hand_query_item))
                 hand_query_item = _get_next_item(1)
                 if hand_query_item.upper() == 'TURN':
                     hand_after_turns.turns_passed = int(self.parsed_query[self.item_index + 1])
@@ -537,44 +587,51 @@ class Query:
             if query_item.upper() == 'OR':
                 self.item_index += 1
                 continue
-        if len(hands) == 1:
-            self.probability = getHandChance(hands[0])
-        elif len(hands) > 1:
-            self.probability = getHandChance(hands[0]) * getHandChance(hands[1])
+        self.hands = hands
 
-    def get_next_hand(self, card_query: ParsedList[str]):
-        hand = []
+    def get_next_hand(self, parsed_query: ParsedList[str]) -> CardQuery:
+        card_query = CardQuery([])
         index = 0
-        while index < len(card_query):
-            card, index = self.get_next_card(card_query, index)
-            hand.append(card)
-        return hand
+        while index < len(parsed_query):
+            card, operator, index = self.get_next_card(parsed_query, index)
+            if not card_query.operator:
+                card_query.operator = operator
+            card_query.cards.append(card)
+        return card_query
 
-    def _comma_check(self, string: str) -> str:
+    def _comma_check(self, string: str) -> Tuple[str, bool]:
         try:
             string.index(',')  # throws error if substring is not found
-            return string.replace(',', '')
+            return string.replace(',', ''), True
         except ValueError:
-            return string
+            return string, False
 
-    def get_next_card(self, card_query: ParsedList[str], index) -> Tuple[Card, int]:
-        if isinstance(card_query[index], str):
-            in_hand = int(card_query[index])
-            card_type = self._comma_check(card_query[index + 1])
+    def get_next_card(self, parsed_query: ParsedList[str], index) -> Tuple[Card|CardQuery, str, int]:
+        operator = None
+        if isinstance(parsed_query[index], str):
+            in_hand = int(parsed_query[index])
+            card_type, is_and = self._comma_check(parsed_query[index + 1])
             deck_total = self.card_types_in_deck[card_type]
             card = Card(card_type, in_hand, deck_total)
             index += 2
-            if index < len(card_query):
-                if card_query[index] == 'MAX':
-                    card.hand_max = int(self._comma_check(card_query[index + 1]))
+            try:
+                if parsed_query[index] == 'MAX':
+                    hand_max_string, is_and = self._comma_check(parsed_query[index + 1])
+                    card.hand_max = int(hand_max_string)
                     index += 2
-                if card_query[index] == 'OR':
+                if parsed_query[index] == 'OR':
+                    operator = 'OR'
                     index += 1
+            except IndexError:
+                pass
+            operator = 'AND' if is_and else operator
         else:
             sub_index = 0
             card = CardQuery([])
-            while sub_index < len(card_query[index]):
-                sub_card, sub_index = self.get_next_card(card_query[index], sub_index)
+            while sub_index < len(parsed_query[index]):
+                sub_card, operator, sub_index = self.get_next_card(parsed_query[index], sub_index)
                 card.cards.append(sub_card)
+                card.operator = operator if operator else card.operator
             index += 1
-        return card, index
+
+        return card, operator, index

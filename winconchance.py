@@ -48,3 +48,11 @@ queryString = '''
  GET { 5 MANA, ( 1 part_a OR 1 tutor ), ( 1 part_b OR 1 tutor ) } TURN 5
 '''
 print(hand_calculator.Query(queryString).probability * 100)
+queryString = '''
+ SET MANA 41
+ SET part_a 2
+ SET part_b 2
+ SET tutor 4
+ GET { 5 MANA MAX 5 OR 6 MANA MAX 6 } TURN 5
+'''
+print(hand_calculator.Query(queryString).probability * 100)
