@@ -1,3 +1,5 @@
+from importlib.resources.readers import remove_duplicates
+
 from scipy.stats import multivariate_hypergeom as mhg
 from typing import List, Dict, Literal, Tuple
 import copy
@@ -8,7 +10,9 @@ _cardsSeen = 7
 _debug = False
 _target_cards = None
 
-type ParsedList[T] = List[T | ParsedList[T]]
+type NestedList[T] = List[T | NestedList[T]]
+type CombinePlan = Literal['SUM', 'MIN', 'MAX', 'WIDE']
+type Operator = Literal['AND', 'OR']
 
 
 class Card:
@@ -28,15 +32,28 @@ class Card:
     def __hash__(self):
         return hash(f'{self.card_type}-{self.in_hand}-{self.deck_total}-{self.hand_max}')
 
+    def negate(self):
+        if self.in_hand > 0:
+            return Card(self.card_type, 0, self.deck_total, self.in_hand-1)
+        elif self.hand_max is not None:
+            # in_hand is 0 to some amount
+            return Card(self.card_type, self.hand_max+1, self.deck_total, None)
+        raise ValueError(f'Card cannot be negated: {self}')
 
-Operator = Literal['AND', 'OR']
 class CardQuery:
     def __init__(self, cards: List[Card | CardQuery], operator: Operator=None):
         self.cards = cards
         self.operator = operator
 
+    @classmethod
+    def fromCards(cls, cards: CardQuery | List[Card | CardQuery]):
+        try:
+            return cls(cards.cards, cards.operator)
+        except AttributeError:
+            return cls(cards)
+
     def __str__(self):
-        return "\n OR ".join([card.__str__() for card in self.cards])
+        return f'\n {self.operator} '.join([card.__str__() for card in self.cards])
 
     def __repr__(self):
         return self.__str__()
@@ -58,6 +75,146 @@ class CardQuery:
         Called to implement assignment to self[key].
         """
         self.cards[key] = value
+
+    def negate(self) -> CardQuery:
+        negated_cards = CardQuery.fromCards([])
+        for card in self.cards:
+            negated_cards.cards.append(card.negate())
+        negated_cards.operator = 'AND' if self.operator == 'OR' else 'OR'
+        return negated_cards
+
+    def dfs(self, cards: CardQuery | List[Card | CardQuery]) -> Tuple[List[List[Card]], List[List[Card]]]:
+        positive_hands: List[List[Card]] = []
+        negative_hands: List[List[Card]] = []
+        req_cards: List[Card] = []
+        or_cards: List[Card] = []
+        queued_cards: List[CardQuery] = []
+        operator: Operator = cards.operator if cards.operator else 'AND'
+
+        def hash_cards(cards: List[Card]):
+            hash = ''
+            for card in cards:
+                hash += f'{card.__hash__()}-'
+            return hash
+
+        def remove_duplicates(hands: List[List[Card]]):
+            filtered_hands: Dict[str, List[Card]] = {}
+            for hand in hands:
+                hand_hash = hash_cards(hand)
+                filtered_hands.setdefault(hand_hash, hand)
+            return list(filtered_hands.values())
+
+        for card in cards:
+            try:
+                # checks if card is CardQuery
+                queued_cards.append(card) if card.cards else None
+            except AttributeError:
+                # if card is not CardQuery, then store it based on operator
+                if operator == 'OR':
+                    or_cards.append(card)
+                else:
+                    req_cards.append(card)
+
+        req_cards = self.combine_card_types(req_cards, 'SUM')
+        or_cards = self.combine_card_types(or_cards, 'WIDE')
+
+        pos_combos, neg_combos = get_card_combinations(req_cards, operator)
+        positive_hands.extend(pos_combos)
+        negative_hands.extend(neg_combos)
+        pos_combos, neg_combos = get_card_combinations(or_cards, operator)
+        positive_hands.extend(pos_combos)
+        negative_hands.extend(neg_combos)
+
+        positive_hands: List[List[Card]] = self.combine_cards_in_hands(positive_hands, operator)
+        negative_hands: List[List[Card]] = self.combine_cards_in_hands(negative_hands, operator)
+
+        for card in queued_cards:
+            combined_positive_hands: List[List[Card]] = []
+            combined_negative_hands: List[List[Card]] = []
+            positive_combos, negative_combos = self.dfs(card)
+            if len(positive_hands) ==  0:
+                combined_positive_hands.extend(positive_combos)
+                combined_negative_hands.extend(negative_combos)
+            else:
+                for hand in positive_hands:
+                    if operator == 'OR':
+                        combined_positive_hands.append(hand)
+                    else:
+                        for combo in positive_combos:
+                            hand_copy = copy.deepcopy(hand)
+                            hand_copy.extend(combo)
+                            combined_positive_hands.append(self.combine_card_types(hand_copy, 'SUM'))
+                        for combo in negative_combos:
+                            hand_copy = copy.deepcopy(hand)
+                            hand_copy.extend(combo)
+                            combined_negative_hands.append(self.combine_card_types(hand_copy, 'SUM'))
+                for hand in negative_hands:
+                    if operator == 'OR':
+                        for combo in positive_combos:
+                            hand_copy = copy.deepcopy(hand)
+                            hand_copy.extend(combo)
+                            combined_positive_hands.append(self.combine_card_types(hand_copy, 'MAX'))
+                        for combo in negative_combos:
+                            hand_copy = copy.deepcopy(hand)
+                            hand_copy.extend(combo)
+                            combined_negative_hands.append(self.combine_card_types(hand_copy, 'MIN'))
+                    else:
+                        combined_negative_hands.append(hand)
+
+            positive_hands = remove_duplicates(combined_positive_hands)
+            negative_hands = remove_duplicates(combined_negative_hands)
+
+        return remove_duplicates(positive_hands), remove_duplicates(negative_hands)
+
+    def combinations(self):
+        return self.dfs(self)
+
+    def combine_cards_in_hands(self, hands: List[List[Card]], operator: Operator):
+        new_hands = []
+        for hand in hands:
+            new_hands.append(self.combine_card_types(hand, operator))
+
+        return new_hands
+
+    def combine_card_types(self, cards: List[Card | CardQuery], combine_plan:CombinePlan='SUM') -> List[Card]:
+        card_types = {}
+        for card in cards:
+            card_types.setdefault(card.card_type, []).append(card)
+        combined_cards = []
+        for card_type in sorted(card_types.keys()):
+            card_type_list = card_types[card_type]
+            if len(card_type_list) == 1:
+                combined_cards.append(card_type_list[0])
+            else:
+                combined_card: Card = copy.deepcopy(card_type_list[0])
+                if combine_plan == 'SUM':
+                    combined_card.in_hand = 0
+                    combined_card.hand_max = None
+                for card in card_type_list:
+                    if combine_plan == 'SUM':
+                        combined_card.in_hand += card.in_hand
+                    elif combine_plan == 'MAX':
+                        combined_card.in_hand = max(combined_card.in_hand, card.in_hand)
+                    else: # MIN or WIDE
+                        combined_card.in_hand = min(combined_card.in_hand, card.in_hand)
+
+                    if card.hand_max is not None:
+                        compare_values = (card.hand_max, combined_card.in_hand)
+                        if combined_card.hand_max is not None:
+                            compare_values = (card.hand_max, combined_card.hand_max, combined_card.in_hand)
+
+                        if combine_plan == 'MIN':
+                            combined_card.hand_max = min(compare_values)
+                        else: # SUM, MAX, or WIDE
+                            combined_card.hand_max = max(compare_values)
+                    if combined_card.hand_max is not None and combined_card.in_hand > combined_card.hand_max:
+                        if combine_plan == 'SUM':
+                            combined_card.hand_max = combined_card.in_hand
+                        else:
+                            combined_card.in_hand = combined_card.hand_max
+                combined_cards.append(combined_card)
+
+        return combined_cards
 
 
 class HandAfterTurns:
@@ -141,73 +298,6 @@ def getHandChance(hand_after_turns: HandAfterTurns, deck_size=99):
     prob_sum = 0
     next_hand = copy.deepcopy(hand_after_turns.cards)
 
-    def combine_card_types(hand: List[Card], operator: Operator='AND') -> List[Card]:
-        card_types = {}
-        for card in hand:
-            card_types.setdefault(card.card_type, []).append(card)
-        new_hand = []
-        for card_type_list in card_types.values():
-            if len(card_type_list) == 1:
-                new_hand.extend(card_type_list)
-            else:
-                new_card: Card = copy.deepcopy(card_type_list[0])
-                new_card.in_hand = 0 if operator == 'AND' else None
-                new_card.hand_max = None
-                for card in card_type_list:
-                    if card.hand_max is not None and (
-                            new_card.hand_max is None or card.hand_max > new_card.hand_max):
-                        new_card.hand_max = card.hand_max
-
-                    if operator == 'AND':
-                        new_card.in_hand += card.in_hand
-                    elif operator == 'OR':
-                        new_card.in_hand = min(card.in_hand, new_card.in_hand) if new_card.in_hand else card.in_hand
-
-                if new_card.hand_max is not None and new_card.in_hand > new_card.hand_max:
-                    new_card.hand_max = new_card.in_hand
-                new_hand.append(new_card)
-
-        return new_hand
-
-    def dfs(cards: CardQuery | List[Card | CardQuery]) -> List[List[Card]]:
-        hands: List[List[Card]] = []
-        req_cards: List[Card] = []
-        or_cards: List[Card] = []
-        queued_cards: List[CardQuery] = []
-        for card in cards:
-            try:
-                queued_cards.append(card) if card.cards else None
-            except AttributeError:
-                try:
-                    if cards.operator == 'OR':
-                        or_cards.append(card)
-                    else:
-                        req_cards.append(card)
-                except AttributeError:
-                    req_cards.append(card)
-        req_cards = combine_card_types(req_cards)
-        or_cards = combine_card_types(or_cards, 'OR')
-        hands.extend(get_card_combinations(req_cards, or_cards))
-
-        for card in queued_cards:
-            combined_hands: List[List[Card]] = []
-            for hand in hands:
-                for combos in dfs(card):
-                    hand_copy = copy.deepcopy(hand)
-                    hand_copy.extend(combos)
-                    combined_hands.append(hand_copy)
-            hands = combined_hands
-
-        new_hands: Dict[str, List[Card]] = {}
-        for hand in hands:
-            new_hand = combine_card_types(hand)
-            hand_hash = ''
-            for card in new_hand:
-                hand_hash += f'{card.__hash__()}-'
-            new_hands.setdefault(hand_hash, new_hand)
-
-        return list(new_hands.values())
-
     while next_hand:
         use_dfs = False
         try:
@@ -224,7 +314,8 @@ def getHandChance(hand_after_turns: HandAfterTurns, deck_size=99):
 
         if use_dfs:
             # CardQuery in hand generate all possible hands for CardQuery
-            possible_hands = dfs(next_hand)
+            possible_hands, negative_hands = CardQuery.fromCards(next_hand).combinations()
+            print(possible_hands)
             for hand in possible_hands:
                 prob_sum += getHandChance(HandAfterTurns(hand, hand_after_turns.turns_passed))
             next_hand = None
@@ -332,13 +423,16 @@ def getHandChanceWithStartingMana(hand_after_turns: HandAfterTurns, start_mana: 
 #     _cardsSeen = 7 + hands_after_turns[-1].turns_passed
 #
 #     turns_with_cards = {}
-#     for hand in reversed(hands_after_turns):
-#         turns_with_cards.setdefault(hand.turns_passed, hand.cards)
+#     card_types_in_hand = {}
+#     for index, hand in enumerate(hands_after_turns):
+#         for card in hand.cards:
+#             card_max = card.hand_max if card.hand_max is not None else card.deck_total
+#             if card.card_type in card_types_in_hand:
+#                 card_types_in_hand[card.card_type].append((card, card_max))
+#             card_types_in_hand.setdefault(card.card_type, []).append()
 #
+#         turns_with_cards.setdefault(hand.turns_passed, []).append(card_types)
 #
-#     max_start_mana = start_mana.hand_max if start_mana.hand_max is not None else start_mana.deck_total
-#     mana_chance = {}
-#     hands = {}
 #     cards_copy = copy.deepcopy(hand_after_turns.cards)
 #     cards_copy = [card for card in cards_copy if card.card_type != 'mana']
 #     # number of non-land cards in opening hand
@@ -401,10 +495,13 @@ def getHandChanceWithStartingMana(hand_after_turns: HandAfterTurns, start_mana: 
 #     return probSum
 
 
-def _card_combinations_as_indexes(hand: List[Card], choose: int):
+def _card_combinations_as_indexes(hand: NestedList[Card], choose: int):
     cards = []
     for index in range(len(hand)):
-        cards.extend([index] * hand[index].in_hand)
+        try:
+            cards.extend([index] * len(hand[index]))
+        except TypeError:
+            cards.extend([index] * hand[index].in_hand)
 
     return list(dict.fromkeys(itertools.combinations(cards, choose)))
 
@@ -430,32 +527,29 @@ def get_tutor_combinations(target_cards: List[Card], num_tutors: int, total_mana
     return hands
 
 
-def get_card_combinations(req_cards: List[Card], or_cards: List[Card]) -> List[List[Card]]:
-    hands: List[List[Card]] = [copy.deepcopy(or_cards)]
+def get_card_combinations(combo_cards: List[Card], operator: Operator) -> Tuple[List[List[Card]], List[List[Card]]]:
+    hands: List[List[Card]] = []
 
-    def sum_nested(nested_list: List[Card | CardQuery]):
-        total = 0
-        for item in nested_list:
-            try:
-                total += sum_nested(item.cards)
-            except AttributeError:
-                total += item.in_hand
-        return total
-
-    number_cards = len(or_cards)
-    total_parts = sum_nested(or_cards)
-    for num_swaps in range(1, min(number_cards, total_parts)):
-        combination_indexes = _card_combinations_as_indexes(or_cards, num_swaps)
-        for replace_indexes in combination_indexes:
-            hand_copy = copy.deepcopy(or_cards)
-            _printDebug(replace_indexes)
-            for index in replace_indexes:
-                hand_copy[index].in_hand -= 1
-                hand_copy[index].hand_max = hand_copy[index].in_hand
-            hands.append(hand_copy)
-    for hand in hands:
-        hand.extend(req_cards)
-    return hands
+    not_hands: List[List[Card]] = []
+    if operator == 'OR':
+        not_hand = []
+        for card in combo_cards:
+            new_hand = [copy.deepcopy(card)]
+            new_hand.extend(copy.deepcopy(not_hand))
+            not_hand.append(card.negate())
+            hands.append(copy.deepcopy(new_hand))
+        if len(not_hand) > 0:
+            not_hands.append(copy.deepcopy(not_hand))
+    else:
+        new_hand = []
+        for card in combo_cards:
+            not_hand = [card.negate()]
+            not_hand.extend(copy.deepcopy(new_hand))
+            new_hand.append(copy.deepcopy(card))
+            not_hands.append(copy.deepcopy(not_hand))
+        if len(new_hand) > 0:
+            hands.append(copy.deepcopy(new_hand))
+    return hands, not_hands
 
 
 def getHandChanceWithStartingManaAndTutors(hand_after_turns: HandAfterTurns, num_tutors: int, target_mana: Card,
@@ -494,7 +588,7 @@ def getHandChanceWithStartingManaAndTutors(hand_after_turns: HandAfterTurns, num
 # SET MANA 40
 # GET { 5 MANA } TURN 0
 class Query:
-    parsed_query: ParsedList
+    parsed_query: NestedList
     probability: float
     hands: List[HandAfterTurns]
 
@@ -524,9 +618,9 @@ class Query:
                 query_lines.append(line)
         self.query(" ".join(query_lines))
 
-    def _parse(self, expr: str, start='(', end=')') -> Tuple[ParsedList[str], bool]:
-        def _helper(it) -> Tuple[ParsedList[str], bool]:
-            items: ParsedList = []
+    def _parse(self, expr: str, start='(', end=')') -> Tuple[NestedList[str], bool]:
+        def _helper(it) -> Tuple[NestedList[str], bool]:
+            items: NestedList = []
             for item in it:
                 if item == start:
                     result, close = _helper(it)
@@ -541,7 +635,7 @@ class Query:
 
         return _helper(iter(expr.split()))
 
-    def _parse_query(self, expr: str) -> ParsedList[str]:
+    def _parse_query(self, expr: str) -> NestedList[str]:
         parsed_query, closed = self._parse(expr, '{', '}')
         for index, query_item in enumerate(parsed_query):
             if not isinstance(query_item, str):
@@ -549,15 +643,13 @@ class Query:
                 parsed_query[index], closed = self._parse(hand_content, '(', ')')
         return parsed_query
 
-    def _parse_card(self, expr: str):
-        print('test')
 
     def query(self, expr):
         def _get_next_item(inc_by=0):
             self.item_index += inc_by
             return self.parsed_query[self.item_index]
 
-        def _process_hand(hand_query_item: ParsedList[str]) -> HandAfterTurns:
+        def _process_hand(hand_query_item: NestedList[str]) -> HandAfterTurns:
             hand_query_item = _get_next_item(1)
             if not isinstance(hand_query_item, str):
                 hand_after_turns = HandAfterTurns(self.get_next_hand(hand_query_item))
@@ -589,7 +681,7 @@ class Query:
                 continue
         self.hands = hands
 
-    def get_next_hand(self, parsed_query: ParsedList[str]) -> CardQuery:
+    def get_next_hand(self, parsed_query: NestedList[str]) -> CardQuery:
         card_query = CardQuery([])
         index = 0
         while index < len(parsed_query):
@@ -606,7 +698,7 @@ class Query:
         except ValueError:
             return string, False
 
-    def get_next_card(self, parsed_query: ParsedList[str], index) -> Tuple[Card|CardQuery, str, int]:
+    def get_next_card(self, parsed_query: NestedList[str], index) -> Tuple[Card | CardQuery, str, int]:
         operator = None
         if isinstance(parsed_query[index], str):
             in_hand = int(parsed_query[index])
@@ -619,9 +711,6 @@ class Query:
                     hand_max_string, is_and = self._comma_check(parsed_query[index + 1])
                     card.hand_max = int(hand_max_string)
                     index += 2
-                if parsed_query[index] == 'OR':
-                    operator = 'OR'
-                    index += 1
             except IndexError:
                 pass
             operator = 'AND' if is_and else operator
@@ -629,9 +718,17 @@ class Query:
             sub_index = 0
             card = CardQuery([])
             while sub_index < len(parsed_query[index]):
-                sub_card, operator, sub_index = self.get_next_card(parsed_query[index], sub_index)
+                sub_card, sub_operator, sub_index = self.get_next_card(parsed_query[index], sub_index)
                 card.cards.append(sub_card)
-                card.operator = operator if operator else card.operator
+                card.operator = sub_operator if sub_operator else card.operator
             index += 1
-
+        try:
+            if parsed_query[index] == 'OR':
+                operator = 'OR'
+                index += 1
+            elif parsed_query[index] == 'AND':
+                operator = 'AND'
+                index += 1
+        except IndexError:
+            pass
         return card, operator, index
