@@ -1,5 +1,3 @@
-from importlib.resources.readers import remove_duplicates
-
 from scipy.stats import multivariate_hypergeom as mhg
 from typing import List, Dict, Literal, Tuple
 import copy
@@ -11,7 +9,7 @@ _debug = False
 _target_cards = None
 
 type NestedList[T] = List[T | NestedList[T]]
-type CombinationPlan = Literal['RANGE', 'ALL']
+type CombinationPlan = Literal['RANGE', 'ALL_LOWER', 'SINGLE']
 type CombinePlan = Literal['SUM', 'MIN', 'MAX', 'WIDE', 'NARROW', 'FIRST_MIN']
 type Operator = Literal['AND', 'OR']
 
@@ -48,7 +46,7 @@ def combine_card_types(cards: List[Card], combine_plan: CombinePlan = 'SUM') -> 
                             combined_card.hand_max = max(compare_values)
 
                 if combined_card.hand_max is not None and combined_card.in_hand > combined_card.hand_max:
-                    if combine_plan in ['SUM', 'KEEP_FIRST']:
+                    if combine_plan in ['SUM', 'FIRST_MIN', 'NARROW']:
                         combined_card.hand_max = combined_card.in_hand
                     else:
                         combined_card.in_hand = combined_card.hand_max
@@ -74,25 +72,20 @@ def get_hand_diff(a: List[Card], b: List[Card]):
             diff.append(b_card)
             continue
         a_card = a_types[b_card.card_type]
-        if a_card.hand_max is not None:
+        if a_card.in_hand < b_card.in_hand:
             in_hand = b_card.in_hand - a_card.in_hand
-            if in_hand <= 0:
-                continue
             deck_total = b_card.deck_total-a_card.in_hand
             diff_max = b_card.hand_max - a_card.in_hand if b_card.hand_max is not None else None
-            if diff_max is not None and diff_max <= 0:
+            if diff_max is not None and diff_max < 0:
                 continue
             diff.append(Card(b_card.card_type, in_hand, deck_total, diff_max))
     return diff
 
-def generate_combinations(hand: List[Card], num_swaps: int, plan: CombinationPlan = 'ALL') -> List[List[Card | CardQuery]]:
+def generate_combinations(hand: List[Card], num_swaps: int, plan: CombinationPlan = 'ALL_LOWER') -> List[List[Card | CardQuery]]:
     draw_hands: List[List[Card]] = []
     total_parts = sum(part.in_hand for part in hand)
     for draws in range(0, min(total_parts, num_swaps) + 1):
-        if plan == 'RANGE':
-            indexes_in_hand = _card_combinations_as_indexes(hand, draws, True)
-        else:
-            indexes_in_hand = _card_combinations_as_indexes(hand, draws)
+        indexes_in_hand = _card_combinations_as_indexes(hand, draws, plan)
 
         for indexes in indexes_in_hand:
             hand_copy = copy.deepcopy(hand)
@@ -105,6 +98,28 @@ def generate_combinations(hand: List[Card], num_swaps: int, plan: CombinationPla
             draw_hands.append(copy.deepcopy(hand_copy))
     return draw_hands
 
+
+def hash_cards(cards: List[Card]):
+    hash = ''
+    for card in cards:
+        hash += f'{card.__hash__()}-'
+    return hash
+
+
+def remove_duplicates(hands: List[List[Card]]):
+    filtered_hands: Dict[str, List[Card]] = {}
+    for hand in sorted(hands, key=len):
+        hand_hash = hash_cards(hand)
+        sub_combo_found = False
+        for num_cards in range(len(hand)):
+            combos = list(dict.fromkeys(itertools.combinations(hand, num_cards)))
+            for sub_combo in combos:
+                sub_hash = hash_cards(sub_combo)
+                if sub_hash in filtered_hands:
+                    sub_combo_found = True
+        if not sub_combo_found:
+            filtered_hands.setdefault(hand_hash, hand)
+    return list(filtered_hands.values())
 
 class Card:
     def __init__(self, card_type, in_hand, deck_total, hand_max=None):
@@ -123,7 +138,7 @@ class Card:
     def __hash__(self):
         return hash(f'{self.card_type}-{self.in_hand}-{self.deck_total}-{self.hand_max}')
 
-    def negate(self):
+    def negate(self) -> Card:
         if self.in_hand > 0:
             return Card(self.card_type, 0, self.deck_total, self.in_hand - 1)
         elif self.hand_max is not None:
@@ -214,19 +229,6 @@ class CardQuery:
         except AttributeError:
             operator = 'AND'
 
-        def hash_cards(cards: List[Card]):
-            hash = ''
-            for card in cards:
-                hash += f'{card.__hash__()}-'
-            return hash
-
-        def remove_duplicates(hands: List[List[Card]]):
-            filtered_hands: Dict[str, List[Card]] = {}
-            for hand in hands:
-                hand_hash = hash_cards(hand)
-                filtered_hands.setdefault(hand_hash, hand)
-            return list(filtered_hands.values())
-
         for card in cards:
             try:
                 # checks if card is CardQuery
@@ -277,7 +279,7 @@ class CardQuery:
                         for combo in positive_combos:
                             hand_copy = copy.deepcopy(hand)
                             hand_copy.extend(combo)
-                            combined_positive_hands.append(combine_card_types(hand_copy, 'MAX'))
+                            combined_positive_hands.append(combine_card_types(hand_copy, 'NARROW'))
                         for combo in negative_combos:
                             hand_copy = copy.deepcopy(hand)
                             hand_copy.extend(combo)
@@ -536,6 +538,7 @@ def get_hands_in_order(target_hands: List[HandAfterTurns], deck_size=99):
                         combined_prev_hands.append(combine_card_types(hand_copy, 'FIRST_MIN'))
             hands_on_turns[prev_turn] = combined_prev_hands
         prev_turn = hand_query.turns_passed
+        hands_on_turns[hand_query.turns_passed] = remove_duplicates(hands_on_turns[hand_query.turns_passed])
 
     turn_hand_chance: Dict[int, List[Tuple[List[Card], float]]] = {}
     prev_turn = None
@@ -551,7 +554,7 @@ def get_hands_in_order(target_hands: List[HandAfterTurns], deck_size=99):
         if index > 0:
             for hand in hands_on_turns[turn]:
                 hand_chance = 0
-                for prev_hand, prev_chance in turn_hand_chance[prev_turn]:
+                for prev_hand, prev_chance in filter(lambda x: x[1] != 0, turn_hand_chance[prev_turn]):
                     draw = get_hand_diff(prev_hand, hand)
                     if len(draw) > 0:
                         draw_chance = getDrawChance(HandAfterTurns(draw, turn), prev_turn)
@@ -568,14 +571,16 @@ def get_hands_in_order(target_hands: List[HandAfterTurns], deck_size=99):
     return prob_sum
 
 
-def _card_combinations_as_indexes(hand: List[Card], choose: int, in_range=False):
+def _card_combinations_as_indexes(hand: List[Card], choose: int, plan:CombinationPlan='ALL_LOWER'):
     cards = []
     for index in range(len(hand)):
-        if in_range:
+        if plan == 'RANGE':
             if hand[index].hand_max is not None:
                 cards.extend([index] * (hand[index].hand_max - hand[index].in_hand))
-        else:
+        elif plan == 'ALL_LOWER':
             cards.extend([index] * hand[index].in_hand)
+        elif plan == 'SINGLE':
+            cards.extend([index])
         # try:
         #     cards.extend([index] * len(hand[index]))
         # except TypeError:
