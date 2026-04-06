@@ -44,6 +44,9 @@ def combine_card_types(cards: List[Card], combine_plan: CombinePlan = 'SUM') -> 
                         else:  # SUM, MAX, or WIDE
                             compare_values = (card.hand_max, combined_card.hand_max, combined_card.in_hand)
                             combined_card.hand_max = max(compare_values)
+                    else:
+                        if combine_plan in ['MIN', 'NARROW', 'FIRST_MIN']:
+                           combined_card.hand_max = card.hand_max
 
                 if combined_card.hand_max is not None and combined_card.in_hand > combined_card.hand_max:
                     if combine_plan in ['SUM', 'FIRST_MIN', 'NARROW']:
@@ -137,6 +140,21 @@ class Card:
 
     def __hash__(self):
         return hash(f'{self.card_type}-{self.in_hand}-{self.deck_total}-{self.hand_max}')
+
+    def __eq__(self, other: Card):
+        return self.__hash__() == other.__hash__()
+
+    def __lt__(self, other: Card):
+        if self.card_type != other.card_type:
+            return self.card_type < other.card_type
+        elif self.in_hand != other.in_hand:
+            return self.in_hand < other.in_hand
+        elif self.hand_max is not None and other.hand_max is not None:
+            return self.hand_max < other.hand_max
+        elif self.hand_max is not None and other.hand_max is None:
+            return True
+
+        return False
 
     def negate(self) -> Card:
         if self.in_hand > 0:
@@ -275,14 +293,28 @@ class CardQuery:
                             hand_copy.extend(combo)
                             combined_negative_hands.append(combine_card_types(hand_copy, 'SUM'))
                 for hand in negative_hands:
+                    if any(sorted(hand) == sorted(pos_hand) for pos_hand in combined_positive_hands):
+                        continue
                     if operator == 'OR':
                         for combo in positive_combos:
+                            not_compatible = False
+                            for combo_card in combo:
+                                for neg_card in hand:
+                                    if neg_card.card_type == combo_card.card_type:
+                                        if neg_card.hand_max is not None:
+                                            if combo_card.in_hand > neg_card.hand_max:
+                                                not_compatible = True
+                                        if combo_card.hand_max is not None:
+                                            if neg_card.in_hand > combo_card.hand_max:
+                                                not_compatible = True
+                            if not_compatible:
+                                continue
                             hand_copy = copy.deepcopy(hand)
                             hand_copy.extend(combo)
                             combined_positive_hands.append(combine_card_types(hand_copy, 'NARROW'))
                         for combo in negative_combos:
                             hand_copy = copy.deepcopy(hand)
-                            hand_copy.extend(combo)
+                            hand_copy.extend([card for card in combo if card not in hand_copy])
                             combined_negative_hands.append(combine_card_types(hand_copy, 'MIN'))
                     else:
                         combined_negative_hands.append(hand)
@@ -656,10 +688,7 @@ class Query:
         self.current_depth = 0
         self.card_types_in_deck: Dict[str, int] = {}
         self.init_card_totals()
-        if len(self.hands) == 1:
-            self.probability = getHandChance(self.hands[0])
-        else:
-            self.probability = get_hands_in_order(self.hands)
+        self.probability = get_hands_in_order(self.hands)
 
     def __str__(self):
         string = f'{self.probability}'
