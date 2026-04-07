@@ -49,15 +49,6 @@ queryString = '''
  THEN { 5 MANA, ( 1 part_a OR 1 tutor ), ( 1 part_b OR 1 tutor ) } TURN 5
 '''
 print(hand_calculator.Query(queryString).probability * 100)
-queryString = '''
- SET MANA 41
- SET part_a 2
- SET part_b 2
- SET tutor 4
- GET { 3 MANA MAX 5 ) } TURN 0
- THEN { 5 MANA, ( 1 part_a OR 1 tutor ), ( 1 part_b OR 1 tutor ) } TURN 5
-'''
-print(hand_calculator.Query(queryString).probability * 100)
 
 queryString = '''
  SET MANA 41
@@ -125,3 +116,11 @@ queryString = '''
 '''
 both_chance = hand_calculator.Query(queryString).probability * 100
 print(staff_chance + both_chance)
+
+queryString = '''
+ SET MANA 41
+ GET { 3 MANA MAX 5 } TURN 0
+ THEN { 5 MANA } TURN 5
+'''
+hand_chance = hand_calculator.Query(queryString).probability * 100
+print(hand_chance)

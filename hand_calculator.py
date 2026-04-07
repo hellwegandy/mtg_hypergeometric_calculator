@@ -14,10 +14,14 @@ type CombinePlan = Literal['SUM', 'MIN', 'MAX', 'WIDE', 'NARROW', 'FIRST_MIN']
 type Operator = Literal['AND', 'OR']
 
 
-def combine_card_types(cards: List[Card], combine_plan: CombinePlan = 'SUM') -> List[Card]:
-    card_types = {}
+def get_card_type_map(cards: List[Card]) -> Dict[str, List[Card]]:
+    card_type_map: Dict[str, List[Card]] = {}
     for card in cards:
-        card_types.setdefault(card.card_type, []).append(card)
+        card_type_map.setdefault(card.card_type, []).append(card)
+    return card_type_map
+
+def combine_card_types(cards: List[Card], combine_plan: CombinePlan = 'SUM') -> List[Card]:
+    card_types = get_card_type_map(cards)
     combined_cards = []
     for card_type in sorted(card_types.keys()):
         card_type_list = card_types[card_type]
@@ -75,13 +79,18 @@ def get_hand_diff(a: List[Card], b: List[Card]):
             diff.append(b_card)
             continue
         a_card = a_types[b_card.card_type]
-        if a_card.in_hand < b_card.in_hand:
+        if a_card.in_hand <= b_card.in_hand:
             in_hand = b_card.in_hand - a_card.in_hand
             deck_total = b_card.deck_total-a_card.in_hand
             diff_max = b_card.hand_max - a_card.in_hand if b_card.hand_max is not None else None
-            if diff_max is not None and diff_max < 0:
+            if diff_max is None and in_hand == 0:
                 continue
             diff.append(Card(b_card.card_type, in_hand, deck_total, diff_max))
+        else:
+            if a_card.hand_max is None and b_card.hand_max is not None:
+                raise ValueError('a cannot become b')
+            if b_card.hand_max is not None and a_card.hand_max is not None and a_card.in_hand > b_card.hand_max:
+                raise ValueError('a cannot become b')
     return diff
 
 def generate_combinations(hand: List[Card], num_swaps: int, plan: CombinationPlan = 'ALL_LOWER') -> List[List[Card | CardQuery]]:
@@ -125,15 +134,19 @@ def remove_duplicates(hands: List[List[Card]]):
     return list(filtered_hands.values())
 
 class Card:
-    def __init__(self, card_type, in_hand, deck_total, hand_max=None):
+    def __init__(self, card_type: str, in_hand: int, deck_total: int, hand_max:int|None=None):
         self.card_type = card_type
         self.in_hand = in_hand
         self.deck_total = deck_total
         self.hand_max = hand_max
 
     def __str__(self):
-        string = f'{self.in_hand} {self.card_type} of {self.deck_total} max {self.hand_max}'
-        return string
+        in_hand_str = f'{self.in_hand}{" or more" if self.hand_max is None else f" to {self.hand_max}"}'
+        if self.hand_max is not None and self.hand_max == self.in_hand:
+            if self.in_hand == 0:
+                return 'No ' + self.card_type
+            in_hand_str = f'{self.in_hand}'
+        return f'{in_hand_str} {self.card_type} ({self.deck_total} in deck)'
 
     def __repr__(self):
         return self.__str__()
@@ -181,7 +194,7 @@ class CardQuery:
             return cls(cards, 'AND')
 
     def __str__(self):
-        return f'\n {self.operator} '.join([card.__str__() for card in self.cards])
+        return '( ' + f' {self.operator} '.join([card.__str__() for card in self.cards]) + ' )'
 
     def __repr__(self):
         return self.__str__()
@@ -293,8 +306,6 @@ class CardQuery:
                             hand_copy.extend(combo)
                             combined_negative_hands.append(combine_card_types(hand_copy, 'SUM'))
                 for hand in negative_hands:
-                    if any(sorted(hand) == sorted(pos_hand) for pos_hand in combined_positive_hands):
-                        continue
                     if operator == 'OR':
                         for combo in positive_combos:
                             not_compatible = False
@@ -587,12 +598,15 @@ def get_hands_in_order(target_hands: List[HandAfterTurns], deck_size=99):
             for hand in hands_on_turns[turn]:
                 hand_chance = 0
                 for prev_hand, prev_chance in filter(lambda x: x[1] != 0, turn_hand_chance[prev_turn]):
-                    draw = get_hand_diff(prev_hand, hand)
-                    if len(draw) > 0:
-                        draw_chance = getDrawChance(HandAfterTurns(draw, turn), prev_turn)
-                        hand_chance += prev_chance * draw_chance
-                    else:
-                        hand_chance += prev_chance
+                    try:
+                        draw = get_hand_diff(prev_hand, hand)
+                        if len(draw) > 0:
+                            draw_chance = getDrawChance(HandAfterTurns(draw, turn), prev_turn)
+                            hand_chance += prev_chance * draw_chance
+                        else:
+                            hand_chance += prev_chance
+                    except ValueError:
+                        pass
                 hand_chances.append((hand, hand_chance))
         prev_turn = turn
 
